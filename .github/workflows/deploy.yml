@@ -33,7 +33,7 @@ jobs:
           username: ${{ secrets.VPS_USERNAME }}
           key: ${{ secrets.VPS_SSH_KEY }}
           passphrase: ${{ secrets.VPS_PASSPHRASE }} # Если SSH-ключ запаролен (опционально)
-          source: "dist/,package.json,package-lock.json"
+          source: "dist/,package.json,package-lock.json,Dockerfile"
           target: "~/domru-yandex-bridge" # Путь к папке проекта на VPS
 
       - name: Execute remote commands via SSH
@@ -45,20 +45,23 @@ jobs:
           passphrase: ${{ secrets.VPS_PASSPHRASE }}
           script: |
             cd ~/domru-yandex-bridge
-            # Установка только production-зависимостей без devDependencies
-            npm install --omit=dev --production
             
-            # Запуск или перезапуск приложения с помощью PM2 на нужном порту
-            # Подставляем свободный порт (например, 3100), чтобы не мешать первому проекту
-            export PORT=3100
+            echo "1. Сборка нового Docker-образа..."
+            docker build -t domru-bridge-img .
             
-            if pm2 describe domru-bridge > /dev/null 2>&1; then
-              echo "Перезапуск существующего процесса PM2..."
-              pm2 restart domru-bridge --update-env
-            else
-              echo "Запуск нового процесса PM2..."
-              pm2 start dist/server.cjs --name "domru-bridge" --node-args="-r dotenv/config"
-            fi
+            echo "2. Остановка и удаление старого контейнера (если он запущен)..."
+            docker stop domru-bridge || true
+            docker rm domru-bridge || true
             
-            # Сохраняем состояние PM2, чтобы перезапускалось после перезагрузки VPS
-            pm2 save
+            echo "3. Запуск контейнера на свободном порту 3100..."
+            # Мы пробрасываем порт 3100 хоста во внутренний порт 3000 контейнера
+            docker run -d \
+              --name domru-bridge \
+              --restart always \
+              -p 3100:3000 \
+              domru-bridge-img
+            
+            echo "4. Очистка неиспользуемых старых Docker образов..."
+            docker image prune -f
+            
+            echo "Готово! Проект успешно перезапущен в Docker на порту 3100"
