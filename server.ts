@@ -5,6 +5,46 @@ import dns from "dns";
 import net from "net";
 import { createServer as createViteServer } from "vite";
 
+// Globally override dns.lookup to bypass broken system DNS in container and host environments
+const originalLookup = dns.lookup;
+const dnsResolver = new dns.Resolver();
+dnsResolver.setServers([
+  "77.88.8.8",    // Yandex Public DNS (Highly reliable in RU)
+  "77.88.8.1",    // Yandex Public DNS backup
+  "8.8.8.8",      // Google Public DNS
+  "1.1.1.1",      // Cloudflare DNS
+]);
+
+(dns as any).lookup = function (
+  hostname: string,
+  options: any,
+  callback: (err: Error | null, address: any, family?: number) => void
+) {
+  if (typeof options === "function") {
+    callback = options;
+    options = {};
+  }
+
+  // Intercept ss-api.domru.ru and general domru subdomains to resolve using CAres resolvers
+  if (hostname === "ss-api.domru.ru" || hostname.endsWith(".domru.ru")) {
+    dnsResolver.resolve4(hostname, (err, addresses) => {
+      if (!err && addresses && addresses.length > 0) {
+        const ip = addresses[0];
+        if (options && options.all) {
+          callback(null, [{ address: ip, family: 4 }]);
+        } else {
+          callback(null, ip, 4);
+        }
+      } else {
+        // Fallback to original lookup
+        originalLookup(hostname, options, callback);
+      }
+    });
+  } else {
+    originalLookup(hostname, options, callback);
+  }
+};
+
 interface LogEntry {
   id: string;
   timestamp: string;

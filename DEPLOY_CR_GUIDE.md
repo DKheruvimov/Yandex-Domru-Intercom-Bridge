@@ -32,24 +32,61 @@
    docker pull dom-ru.cr.cloud.ru/domru-yandex-bridge:latest
    ```
 
-3. **Запустите контейнер шлюза на свободном порту 3100:**
+3. **Запустите контейнер шлюза на свободном порту 3100 с надежной конфигурацией DNS:**
+   Чтобы обойти возможные сбои локального DNS-сервера вашей VPS (которые приводят к ошибке `getaddrinfo ENOTFOUND ss-api.domru.ru`), мы явно передаем контейнеру надежные публичные DNS-сервера (Яндекс DNS и Google DNS) с помощью флагов `--dns`:
    ```bash
    docker run -d \
      --name domru-bridge \
      --restart always \
+     --dns 77.88.8.8 \
+     --dns 8.8.8.8 \
      -p 3100:3000 \
      dom-ru.cr.cloud.ru/domru-yandex-bridge:latest
    ```
 
 ---
 
+### ⚠️ Важное предупреждение перед запуском Watchtower:
+Перед запуском Watchtower обязательно выполните `docker login` (шаг 2.1). Если запустить Watchtower **до того**, как файл `/root/.docker/config.json` физически появится на вашем сервере, Docker автоматически создаст **директорию** с именем `config.json`. Это заблокирует авторизацию и вызовет ошибки `401 Unauthorized`.
+
+---
+
 ## 3. Как настроить 100% Автоматическое обновление (CD) на VPS
-Чтобы при каждом пуше в Github и обновлении образа на Artifact Registry ваш сервер **автоматически** скачивал новую версию и перезапускал её (без ручного ввода команд), используйте инструмент **Watchtower**.
 
-Это легковесная и безопасная утилита, которая не требует SSH-ключей в GitHub:
+Если вы столкнулись с ошибкой `read /root/.docker/config.json: is a directory`, выполните на сервере следующие команды **строго по очереди**:
 
-Выполните на сервере VPS следующую команду один раз (добавьте `sudo` перед `docker`, если вы залогинены не под root):
 ```bash
+# 1. Сначала СРАЗУ удаляем ошибочно созданную директорию config.json (это уберет все предупреждения от docker!)
+sudo rm -rf /root/.docker/config.json
+
+# 2. Создаем правильную структуру папок для Docker
+sudo mkdir -p /root/.docker
+
+# 3. Теперь останавливаем и удаляем старый watchtower (теперь без каких-либо предупреждений!)
+sudo docker stop watchtower || true
+sudo docker rm watchtower || true
+
+# 4. Проходим авторизацию заново (это создаст правильный ФАЙЛ config.json вместо директории)
+sudo docker login dom-ru.cr.cloud.ru -u f79341e4475e27f68bf0d81e78d88b3e
+
+# 5. Проверяем, что теперь это именно файл с верифицированным логином (должно вывести текст json)
+sudo cat /root/.docker/config.json
+
+# 6. Скачиваем свежий образ вручную
+sudo docker pull dom-ru.cr.cloud.ru/domru-yandex-bridge:latest
+
+# 7. Перезапускаем наш контейнер шлюза с принудительным DNS (Яндекс и Google)
+sudo docker stop domru-bridge || true
+sudo docker rm domru-bridge || true
+sudo docker run -d \
+  --name domru-bridge \
+  --restart always \
+  --dns 77.88.8.8 \
+  --dns 8.8.8.8 \
+  -p 3100:3000 \
+  dom-ru.cr.cloud.ru/domru-yandex-bridge:latest
+
+# 8. Запускаем Watchtower (только теперь, когда файл config.json существует!)
 sudo docker run -d \
   --name watchtower \
   --restart always \
@@ -137,5 +174,35 @@ sudo systemctl reload nginx
    sudo certbot renew --dry-run
    ```
    Если ошибок нет, ваш сертификат будет автоматически обновляться вечно!
+
+---
+
+## 6. Решение возможных проблем с DNS (getaddrinfo ENOTFOUND ss-api.domru.ru)
+
+Если в логах или веб-интерфейсе вашего шлюза отображается ошибка:
+> *Не удалось связаться с серверами Дом.ру: fetch failed (Причина: getaddrinfo ENOTFOUND ss-api.domru.ru)*
+
+### Почему это происходит:
+Кусок сети Docker-моста по умолчанию наследует DNS-настройки вашей хост-системы VPS. Сетевые DNS-резолверы некоторых провайдеров в облаке Cloud.ru могут давать сбой или не разрешать внутренние поддомены ЭР-Телеком (Дом.ру), такие как `ss-api.domru.ru`.
+
+### Как это исправить за 10 секунд:
+Перезапустите контейнер шлюза с принудительным назначением быстрых публичных DNS-серверов Яндекса и Google с помощью параметров `--dns`:
+
+```bash
+# 1. Останавливаем старый контейнер
+sudo docker stop domru-bridge || true
+sudo docker rm domru-bridge || true
+
+# 2. Запускаем заново с явным указанием DNS
+sudo docker run -d \
+  --name domru-bridge \
+  --restart always \
+  --dns 77.88.8.8 \
+  --dns 8.8.8.8 \
+  -p 3100:3000 \
+  dom-ru.cr.cloud.ru/domru-yandex-bridge:latest
+```
+
+*(Watchtower автоматически сохраняет все переданные при запуске параметры (включая `--dns`), поэтому при будущих автодеплоях с GitHub настройки сохранятся!)*
 
 Ваш шлюз теперь полностью доступен по безопасному адресу `https://kheruvimov.ru` и настроен для автодеплоя!
