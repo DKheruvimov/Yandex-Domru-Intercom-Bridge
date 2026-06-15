@@ -1,136 +1,76 @@
-# Инструкция по развертыванию Шлюза Дом.ру — Яндекс на VPS
+# Инструкция по деплою Шлюза Дом.ру — Яндекс через Cloud.ru Artifact Registry
 
-У вас есть два основных (и очень удобных) способа настроить CI/CD через GitHub Actions для этого проекта:
+Данный проект полностью настроен для автоматической сборки и публикации в вашем приватном реестре **Cloud.ru Artifact Registry** по адресу:
+`dom-ru.cr.cloud.ru/domru-yandex-bridge:latest`
+
+В репозитории **нет необходимости настраивать SSH-ключи, доступы к VPS или сторонние скрипты**. Деплой происходит по точно такой же схеме, как и в вашем рабочем проекте `kheruvimovy2`.
 
 ---
 
-## Способ 1. Через Cloud.ru Artifact Registry (Рекомендуемый, безопасный)
+## 1. Настройки секретов в GitHub
+Для того чтобы GitHub Actions мог успешно загружать собранные Docker-образы в ваш реестр, перейдите в настройки репозитория:
+**Settings ➔ Secrets and variables ➔ Actions ➔ Repository secrets** и убедитесь, что у вас добавлены следующие два секрета:
 
-Так как вы уже пользовались Artifact Registry (Container Registry) на Cloud.ru, этот способ идеален: сборка Docker-образа происходит прямо в GitHub Actions, образ сохраняется в приватный реестр Cloud.ru, а на самом сервере VPS происходит только скачивание (`pull`) и перезапуск контейнера. Это позволяет не хранить приватные SSH-ключи в репозитории (или разграничить доступы).
+1. `REGISTRY_USERNAME` — Ваше имя пользователя (Key ID) от Cloud.ru. Например: `f79341e4475e27f68bf0d81e78d88b3e` (активный ключ доступа).
+2. `REGISTRY_PASSWORD` — Пароль вашего сервисного аккаунта или секретный ключ ключа доступа (Secret Key).
 
-### 1. Подготовка секретов в GitHub
-Вам необходимо добавить следующие секреты в ваш GitHub-репозиторий (**Settings ➔ Secrets and variables ➔ Actions ➔ New repository secret**):
-- `CR_REGISTRY`: Адрес вашего реестра в Cloud.ru (например, `cr.ru-central1.aerid.co` или аналогичный).
-- `CR_USERNAME`: Имя пользователя или сервисного аккаунта для авторизации в реестре.
-- `CR_PASSWORD`: Пароль или ключ доступа.
-- `VPS_HOST`: IP-адрес вашей VPS.
-- `VPS_USERNAME`: Имя пользователя SSH (обычно `root` или `ubuntu`).
-- `VPS_SSH_KEY`: Ваш приватный SSH-ключ для запуска команды обновления на сервере.
+---
 
-### 2. Файл GitHub Actions (`.github/workflows/deploy-registry.yml`)
-Вы можете переименовать или заменить текущий файл на подобную конфигурацию:
+## 2. Как запустить контейнер на вашей VPS
+Так как сборка и деплой образа происходят на стороне GitHub Actions и загружаются в `dom-ru.cr.cloud.ru`, на самом сервере вам нужно выполнить запуск контейнера всего один раз.
 
-```yaml
-name: Build and Push Docker image to Cloud.ru CR & Deploy
+### Подключитесь по SSH к вашей VPS и выполните:
 
-on:
-  push:
-    branches:
-      - main
+1. **Авторизуйтесь в реестре Cloud.ru на сервере:**
+   ```bash
+   docker login dom-ru.cr.cloud.ru -u f79341e4475e27f68bf0d81e78d88b3e
+   ```
+   *(Введите секретный пароль ключа доступа, когда Docker его запросит)*
 
-jobs:
-  build-and-push:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+2. **Загрузите (pull) последний образ шлюза:**
+   ```bash
+   docker pull dom-ru.cr.cloud.ru/domru-yandex-bridge:latest
+   ```
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 18
+3. **Запустите контейнер шлюза на свободном порту 3100:**
+   ```bash
+   docker run -d \
+     --name domru-bridge \
+     --restart always \
+     -p 3100:3000 \
+     dom-ru.cr.cloud.ru/domru-yandex-bridge:latest
+   ```
 
-      - name: Install & Build Frontend-Backend
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-          npm run build
+---
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-qemu-action@v3
-        
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+## 3. Как настроить 100% Автоматическое обновление (CD) на VPS
+Чтобы при каждом пуше в Github и обновлении образа на Artifact Registry ваш сервер **автоматически** скачивал новую версию и перезапускал её (без ручного ввода команд), используйте инструмент **Watchtower**.
 
-      - name: Log in to Cloud.ru Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.CR_REGISTRY }}
-          username: ${{ secrets.CR_USERNAME }}
-          password: ${{ secrets.CR_PASSWORD }}
+Это легковесная и безопасная утилита, которая не требует SSH-ключей в GitHub:
 
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: ${{ secrets.CR_REGISTRY }}/domru-bridge:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  deploy:
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - name: Execute remote deployment commands via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USERNAME }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          passphrase: ${{ secrets.VPS_PASSPHRASE }} # Опционально
-          script: |
-            # 1. Логинимся в реестр на стороне VPS
-            echo "${{ secrets.CR_PASSWORD }}" | docker login ${{ secrets.CR_REGISTRY }} -u "${{ secrets.CR_USERNAME }}" --password-stdin
-            
-            # 2. Скачиваем новый образ
-            docker pull ${{ secrets.CR_REGISTRY }}/domru-bridge:latest
-            
-            # 3. Останавливаем старый контейнер
-            docker stop domru-bridge || true
-            docker rm domru-bridge || true
-            
-            # 4. Запускаем новый контейнер на свободном порту 3100
-            docker run -d \
-              --name domru-bridge \
-              --restart always \
-              -p 3100:3000 \
-              ${{ secrets.CR_REGISTRY }}/domru-bridge:latest
-              
-            # 5. Очищаем старые неиспользуемые слои
-            docker image prune -f
-            
-            echo "Обновление шлюза на порту 3100 завершено успешно!"
+Выполните на сервере VPS следующую команду один раз:
+```bash
+docker run -d \
+  --name watchtower \
+  --restart always \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v /root/.docker/config.json:/config.json \
+  containrrr/watchtower \
+  --cleanup \
+  --interval 300
 ```
 
----
-
-## Способ 2. Прямой деплой через SSH (то, что настроено сейчас)
-
-Если вы хотите использовать текущий файл `.github/workflows/deploy.yml` (где файлы компилируются, переносятся через SCP, а Docker-образ строится прямо на самой VPS):
-
-1. Перейдите в настройки вашего GitHub репозитория:
-   **Settings ➔ Secrets and variables ➔ Actions**
-2. Нажмите кнопку **New repository secret** и добавьте следующие ключи:
-   - `VPS_HOST` — внешний IP-адрес вашей виртуальной машины на Cloud.ru.
-   - `VPS_USERNAME` — имя пользователя SSH (например, `root`, `ubuntu` или `centos`).
-   - `VPS_SSH_KEY` — содержимое вашего приватного SSH-ключа (файл `id_rsa` / `id_ed25519` со стороны вашего локального ПК или сервера, у которого есть доступ к VPS).
-   - `VPS_PASSPHRASE` — *(опционально)* если ваш приватный SSH-ключ зашифрован паролем.
-
-После добавления этих секретов любой новый push в ветку `main` успешно выполнит деплой в Docker на порт `3100`.
+### Как это работает:
+* Раз в 5 минут (300 секунд) Watchtower обращается к вашему `dom-ru.cr.cloud.ru` используя авторизацию, сохраненную на шаге 2.1.
+* Если на GitHub Actions собрался новый образ `:latest`, Watchtower аккуратно скачивает его, гасит старый контейнер `domru-bridge` и запускает его на том же порту `3100` с новым кодом.
+* При работе Watchtower старые слои Docker автоматически удаляются (`--cleanup`), предотвращая переполнение диска VPS.
 
 ---
 
-## Как это уживается со старым проектом (kheruvimovy.ru)
-Так как первый проект работает на своих портах и доменах:
-1. Контейнер нового шлюза запускается на порту `3100` (никак не пересекаясь с портами первого проекта).
-2. На сервере в конфигурационном файле Nginx (например, в `/etc/nginx/sites-available/` или в общей папке конфигураций) вам достаточно настроить проксирование с нового домена `kheruvimov.ru` (или `kheruvimovy.online`) на локальный порт `3100`.
+## 4. Настройка Nginx для уживания со старым проектом (kheruvimovy.ru)
+Так как первый проект уже запущен на сервере, новый шлюз на порту `3100` будет работать полностью изолированно. Вам достаточно настроить Nginx на VPS для проксирования запросов:
 
-Пример секции в Nginx для нового домена:
+Создайте или добавьте в `/etc/nginx/sites-available/kheruvimov.ru` (ваш новый домен):
 ```nginx
 server {
     listen 80;
@@ -146,4 +86,10 @@ server {
     }
 }
 ```
-Такой подход гарантирует, что оба ваших проекта будут работать на одной и той же VPS абсолютно независимо и плавно!
+
+Активируйте конфигурацию и перезапустите Nginx:
+```bash
+ln -s /etc/nginx/sites-available/kheruvimov.ru /etc/nginx/sites-enabled/
+nginx -t && systemctl reload nginx
+```
+Ваш шлюз полностью готов к работе и автодеплою!
