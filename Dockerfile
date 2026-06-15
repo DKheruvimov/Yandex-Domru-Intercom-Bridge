@@ -12,6 +12,9 @@ RUN npm ci --omit=dev
 # Copy compiled build directory
 COPY dist/ ./dist/
 
+# Set production environment
+ENV NODE_ENV=production
+
 # Expose the application port
 EXPOSE 3000
 
