@@ -1,0 +1,6 @@
+{
+  "name": "Yandex Domru Intercom Bridge",
+  "description": "An integration bridge connecting Dom.ru smart intercoms to Yandex Smart Home",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

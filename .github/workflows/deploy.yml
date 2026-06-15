@@ -1,0 +1,64 @@
+name: Deploy to Cloud.ru VPS
+
+on:
+  push:
+    branches:
+      - main # Срабатывает при пуше в ветку main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-size: '18.x'
+          node-version: 18
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the application
+        run: npm run build
+
+      - name: Copy built files and configs via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          passphrase: ${{ secrets.VPS_PASSPHRASE }} # Если SSH-ключ запаролен (опционально)
+          source: "dist/,package.json,package-lock.json"
+          target: "~/domru-yandex-bridge" # Путь к папке проекта на VPS
+
+      - name: Execute remote commands via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USERNAME }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          passphrase: ${{ secrets.VPS_PASSPHRASE }}
+          script: |
+            cd ~/domru-yandex-bridge
+            # Установка только production-зависимостей без devDependencies
+            npm install --omit=dev --production
+            
+            # Запуск или перезапуск приложения с помощью PM2 на нужном порту
+            # Подставляем свободный порт (например, 3100), чтобы не мешать первому проекту
+            export PORT=3100
+            
+            if pm2 describe domru-bridge > /dev/null 2>&1; then
+              echo "Перезапуск существующего процесса PM2..."
+              pm2 restart domru-bridge --update-env
+            else
+              echo "Запуск нового процесса PM2..."
+              pm2 start dist/server.cjs --name "domru-bridge" --node-args="-r dotenv/config"
+            fi
+            
+            # Сохраняем состояние PM2, чтобы перезапускалось после перезагрузки VPS
+            pm2 save
